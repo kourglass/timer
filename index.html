@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>집중 타이머</title>
+
+<style>
+body{margin:0;font-family:sans-serif;background:#eef1f7;}
+.container{display:flex;flex-direction:column;height:100vh;}
+
+.tabs{display:flex;background:#fff;}
+.tab{flex:1;padding:12px;text-align:center;cursor:pointer;}
+.tab.active{color:#5b5bff;border-bottom:3px solid #5b5bff;}
+
+.content{flex:1;display:flex;}
+.hidden{display:none;}
+
+.timer-section{display:flex;width:100%;}
+.left,.right{flex:1;padding:10px;}
+.right{border-left:1px solid #ddd;}
+
+.timer{font-size:36px;text-align:center;font-weight:bold;}
+
+button{padding:8px;margin:4px;border:none;border-radius:8px;background:#5b5bff;color:white;}
+
+.bar{height:6px;background:#ddd;border-radius:10px;overflow:hidden;}
+.fill{height:100%;background:#7a6cff;width:100%;transition:0.3s;}
+
+.cycle{background:#fff;margin:6px 0;padding:8px;border-radius:10px;}
+.cycle.active{background:#efeaff;}
+
+.row{display:flex;gap:4px;align-items:center;flex-wrap:wrap;}
+
+input{border-radius:6px;border:1px solid #ccc;padding:4px;}
+input[type="number"]{width:40px;text-align:center;}
+
+.goal{background:#fff;padding:6px;margin:4px 0;border-radius:6px;display:flex;align-items:center;}
+.circle{width:16px;height:16px;border:2px solid #5b5bff;border-radius:50%;margin-right:6px;cursor:pointer;}
+
+.calendar{padding:10px;width:100%;}
+.calendar-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;}
+.day,.header{background:#fff;padding:5px;text-align:center;border-radius:6px;font-size:12px;}
+.header{background:#ddd;}
+.today{background:#dcd6ff;}
+.dot{width:5px;height:5px;background:#5b5bff;border-radius:50%;margin:2px auto;}
+
+.log{background:#fff;margin:4px 0;padding:6px;border-radius:6px;font-size:12px;}
+
+.footer{
+position:fixed;
+bottom:5px;
+width:100%;
+text-align:center;
+color:#f4e58a;
+font-size:12px;
+pointer-events:none;
+}
+
+@media(max-width:768px){
+  .timer-section{flex-direction:column;}
+  .right{border-left:none;border-top:1px solid #ddd;}
+}
+</style>
+</head>
+
+<body>
+<div class="container">
+
+<div class="tabs">
+<div class="tab active" onclick="switchTab('timer',this)">타이머</div>
+<div class="tab" onclick="switchTab('calendar',this)">달력</div>
+</div>
+
+<div id="timer" class="content">
+<div class="timer-section">
+
+<div class="left">
+<div id="timerDisplay" class="timer">00:00:00</div>
+<button onclick="toggleTimer()">시작 / 정지</button>
+<button onclick="addCycle()">+ 사이클</button>
+<div id="cycles"></div>
+<button id="confirmBtn" onclick="confirmCycle()" style="display:none;width:100%;">확인</button>
+</div>
+
+<div class="right">
+<h3>리마인더</h3>
+<input id="goalInput" placeholder="목표 입력" style="width:100%;">
+<button onclick="addGoal()" style="width:100%;">추가</button>
+<div id="goals"></div>
+</div>
+
+</div>
+</div>
+
+<div id="calendar" class="content hidden">
+<div class="calendar">
+<h3 id="calendarTitle"></h3>
+<div id="calendarGrid" class="calendar-grid"></div>
+<div id="logs"></div>
+</div>
+</div>
+
+</div>
+
+<div class="footer">:모래시계:</div>
+
+<script>
+
+let cycles=[],currentCycle=0,timer=null,timeLeft=0,isRunning=false;
+let goals=[],logs=[],dateLogs={};
+let audioCtx=null,isMuted=false;
+
+function totalSeconds(c){return (c.h||0)*3600+(c.m||0)*60+(c.s||0);}
+function formatTime(s){
+let h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sec=s%60;
+return String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')+':'+String(sec).padStart(2,'0');
+}
+
+function addCycle(){
+if(cycles.length>=5)return;
+cycles.push({name:'제목',h:0,m:0,s:10});
+renderCycles();
+}
+
+function renderCycles(){
+let ctn=document.getElementById('cycles');ctn.innerHTML='';
+cycles.forEach((c,i)=>{
+let div=document.createElement('div');
+div.className='cycle'+(i===currentCycle?' active':'');
+
+let bar=document.createElement('div');bar.className='bar';
+let fill=document.createElement('div');fill.className='fill';
+
+let total=totalSeconds(c);
+let ratio=(i===currentCycle)?(total>0?timeLeft/total:0):1;
+ratio=Math.max(0,Math.min(1,ratio));
+fill.style.width=(ratio*100)+'%';
+
+bar.appendChild(fill);
+
+let row=document.createElement('div');row.className='row';
+
+let name=document.createElement('input');name.value=c.name;
+name.oninput=e=>c.name=e.target.value;
+
+let s=document.createElement('input');s.type='number';s.value=c.s;
+s.oninput=e=>c.s=Math.max(0,e.target.value||0);
+
+let del=document.createElement('button');del.innerText='삭제';
+del.onclick=()=>{cycles.splice(i,1);renderCycles();};
+
+row.append(name,s,'초',del);
+div.append(bar,row);
+ctn.appendChild(div);
+});
+}
+
+function toggleTimer(){
+if(isRunning){
+clearInterval(timer);
+isRunning=false;
+}else{
+if(!cycles.length)return;
+timeLeft=totalSeconds(cycles[currentCycle]);
+run();
+}
+}
+
+function run(){
+isRunning=true;
+timer=setInterval(()=>{
+if(timeLeft<=0){
+clearInterval(timer);
+playSound();
+document.getElementById('confirmBtn').style.display='block';
+return;
+}
+timeLeft--;
+document.getElementById('timerDisplay').innerText=formatTime(timeLeft);
+renderCycles();
+},1000);
+}
+
+function confirmCycle(){
+document.getElementById('confirmBtn').style.display='none';
+currentCycle=(currentCycle+1)%cycles.length;
+timeLeft=totalSeconds(cycles[currentCycle]);
+run();
+}
+
+function addGoal(){
+let i=document.getElementById('goalInput');
+if(!i.value)return;
+goals.push(i.value);
+i.value='';
+renderGoals();
+}
+
+function renderGoals(){
+let c=document.getElementById('goals');c.innerHTML='';
+goals.forEach((g,i)=>{
+let d=document.createElement('div');d.className='goal';
+let span=document.createElement('span');span.innerText=g;
+let circle=document.createElement('div');circle.className='circle';
+circle.onclick=()=>{
+addLog(g+' 완료');
+goals.splice(i,1);
+renderGoals();
+};
+d.append(circle,span);
+c.appendChild(d);
+});
+}
+
+function addLog(text){
+let d=new Date();
+let key=d.getFullYear()+'-'+(d.getMonth()+1)+'-'+d.getDate();
+let t=d.toLocaleTimeString();
+let full=t+' - '+text;
+logs.push(full);
+if(!dateLogs[key])dateLogs[key]=[];
+dateLogs[key].push(full);
+renderLogs();
+renderCalendar();
+}
+
+function renderLogs(){
+let c=document.getElementById('logs');c.innerHTML='';
+logs.slice().reverse().forEach(l=>{
+let d=document.createElement('div');
+d.className='log';
+d.innerText=l;
+c.appendChild(d);
+});
+}
+
+function renderCalendar(){
+let grid=document.getElementById('calendarGrid');
+let title=document.getElementById('calendarTitle');
+let now=new Date();
+let y=now.getFullYear(),m=now.getMonth(),t=now.getDate();
+
+title.innerText=y+'년 '+(m+1)+'월';
+grid.innerHTML='';
+
+['일','월','화','수','목','금','토'].forEach(d=>{
+let h=document.createElement('div');h.className='header';h.innerText=d;
+grid.appendChild(h);
+});
+
+let first=new Date(y,m,1).getDay();
+let last=new Date(y,m+1,0).getDate();
+
+for(let i=0;i<first;i++)grid.appendChild(document.createElement('div'));
+
+for(let d=1;d<=last;d++){
+let day=document.createElement('div');
+let key=y+'-'+(m+1)+'-'+d;
+day.className='day'+(d===t?' today':'');
+day.innerText=d;
+
+if(dateLogs[key]){
+let dot=document.createElement('div');
+dot.className='dot';
+day.appendChild(dot);
+}
+
+grid.appendChild(day);
+}
+}
+
+function playSound(){
+if(isMuted)return;
+if(!audioCtx)audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+if(audioCtx.state==='suspended')audioCtx.resume();
+
+const beep=(f,d)=>{
+let o=audioCtx.createOscillator(),g=audioCtx.createGain();
+o.type='square';o.frequency.value=f;
+o.connect(g);g.connect(audioCtx.destination);
+
+g.gain.setValueAtTime(0,audioCtx.currentTime+d);
+g.gain.linearRampToValueAtTime(0.4,audioCtx.currentTime+d+0.02);
+g.gain.linearRampToValueAtTime(0,audioCtx.currentTime+d+0.2);
+
+o.start(audioCtx.currentTime+d);
+o.stop(audioCtx.currentTime+d+0.22);
+};
+
+beep(1046,0);
+beep(1175,0.3);
+beep(1046,0.6);
+beep(1175,0.9);
+}
+
+let muteBtn=document.createElement('button');
+muteBtn.innerText='🔊';
+muteBtn.style.position='fixed';
+muteBtn.style.bottom='10px';
+muteBtn.style.right='10px';
+muteBtn.onclick=()=>{
+isMuted=!isMuted;
+muteBtn.innerText=isMuted?'🔇':'🔊';
+};
+document.body.appendChild(muteBtn);
+
+function switchTab(tab,el){
+document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+el.classList.add('active');
+document.getElementById('timer').classList.add('hidden');
+document.getElementById('calendar').classList.add('hidden');
+document.getElementById(tab).classList.remove('hidden');
+}
+
+renderCycles();
+renderGoals();
+renderCalendar();
+
+</script>
+</body>
+</html>
